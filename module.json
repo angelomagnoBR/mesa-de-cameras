@@ -1,0 +1,19 @@
+{
+  "id": "mesa-de-cameras",
+  "title": "Mesa de Câmeras",
+  "description": "Coloca as câmeras dos jogadores atrás das áreas transparentes de uma arte PNG, como uma mesa de stream. Detecta as áreas sozinho e deixa você escolher quem fica em cada uma.",
+  "version": "1.0.0",
+  "authors": [
+    { "name": "Angelo Magno" }
+  ],
+  "compatibility": {
+    "minimum": "12",
+    "verified": "13"
+  },
+  "esmodules": ["scripts/main.js"],
+  "styles": ["styles/mesa-de-cameras.css"],
+  "languages": [],
+  "url": "https://github.com/angelomagnoBR/mesa-de-cameras",
+  "manifest": "https://raw.githubusercontent.com/angelomagnoBR/mesa-de-cameras/main/module.json",
+  "download": "https://github.com/angelomagnoBR/mesa-de-cameras/raw/main/mesa-de-cameras.zip"
+}
