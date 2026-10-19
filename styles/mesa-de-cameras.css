@@ -91,9 +91,11 @@
 #mdc-overlay .mdc-buttons button:hover { background: rgba(0, 0, 0, 0.85); }
 #mdc-overlay .mdc-buttons button.mdc-off { background: rgba(150, 20, 20, 0.85); color: #fff; }
 
-/* Esconde o dock padrão sem cortar o áudio */
+/* Esconde o dock padrão sem cortar áudio nem vídeo.
+   Usa opacidade (e não visibility/display) porque alguns sistemas de chamada,
+   como o LiveKit, param de enviar o vídeo de quem "não está visível" na tela. */
 body.mdc-hide-dock #camera-views {
-  visibility: hidden !important;
+  opacity: 0 !important;
   pointer-events: none !important;
 }
 

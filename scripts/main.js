@@ -167,16 +167,21 @@ function dockViewFor(userId) {
 }
 
 function streamFor(userId) {
+  // 1º: o stream que o próprio Foundry está exibindo no dock (é o mais confiável)
+  const v = dockViewFor(userId)?.querySelector("video");
+  if (v?.srcObject instanceof MediaStream && hasLiveVideo(v.srcObject)) return v.srcObject;
   let stream = null;
   try { stream = game.webrtc?.client?.getMediaStreamForUser?.(userId) ?? null; } catch (e) { /* ignora */ }
-  if (!stream) {
-    const v = dockViewFor(userId)?.querySelector("video");
-    if (v?.srcObject) stream = v.srcObject;
-  }
+  if (!stream && v?.srcObject) stream = v.srcObject;
   if (!stream && userId === game.user.id) {
     try { stream = game.webrtc?.client?.localStream ?? null; } catch (e) { /* ignora */ }
   }
   return stream;
+}
+
+/** Identifica o stream pelas trilhas de vídeo, não pelo objeto (alguns clientes recriam o objeto). */
+function streamKey(stream) {
+  return stream?.getVideoTracks?.().map(t => t.id).join("|") ?? "";
 }
 
 function rtcUser(userId) {
@@ -356,13 +361,39 @@ const Overlay = {
       }
 
       const stream = streamFor(user.id);
-      const show = videoVisible(user, stream);
-      if (show && video.srcObject !== stream) {
-        video.srcObject = stream;
-        video.play?.().catch(() => {});
+      const now = Date.now();
+      let show = videoVisible(user, stream);
+
+      // Evita piscar: uma queda rápida do sinal não apaga a câmera.
+      // Só desliga depois de ~2s seguidos sem vídeo (ou na hora, se o jogador desligou).
+      if (show) video._offSince = 0;
+      else if (!cameraOffByFlag(user) && user.active && video.srcObject) {
+        video._offSince ||= now;
+        if (now - video._offSince < 2000) show = true;
       }
-      if (!show && video.srcObject) video.srcObject = null;
-      el.classList.toggle("mdc-novideo", !show);
+
+      if (show && stream) {
+        const key = streamKey(stream);
+        if (video._key !== key) {
+          video._key = key;
+          video._assignedAt = now;
+          video._kicked = false;
+          video.srcObject = stream;
+        }
+        if (video.paused) video.play?.().catch(() => {});
+        // Vídeo travado sem quadros: reconecta uma vez
+        if (video.readyState < 2 && !video._kicked && now - video._assignedAt > 4000) {
+          video._kicked = true;
+          video._assignedAt = now;
+          video.srcObject = null;
+          video.srcObject = stream;
+          video.play?.().catch(() => {});
+        }
+      } else if (!show && video.srcObject) {
+        video.srcObject = null;
+        video._key = "";
+      }
+      el.classList.toggle("mdc-novideo", !show || !video.srcObject);
       const src = fallbackImage(user);
       if (fb.getAttribute("src") !== src) fb.setAttribute("src", src);
       // Espelha a própria câmera, como o Foundry faz
