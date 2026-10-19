@@ -17,6 +17,7 @@ https://raw.githubusercontent.com/angelomagnoBR/mesa-de-cameras/main/module.json
 3. Como GM, abra o editor: **Configurações → Mesa de Câmeras → Abrir editor**, ou pelo botão na barra de controles de token.
 4. Escolha a arte. O módulo detecta as áreas transparentes sozinho.
 5. Em cada área, escolha qual usuário fica ali (pode ser o GM, ou deixar vazio).
+   O módulo também detecta a **inclinação** de cada área. Para ajustar na mão, digite o ângulo ou arraste a bolinha amarela no topo da área.
 6. Marque **Mesa ativa para todos** e salve.
 
 Atalho do GM para ligar/desligar a mesa: **Shift + M**.

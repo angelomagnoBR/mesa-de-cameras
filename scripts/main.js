@@ -56,31 +56,33 @@ async function detectSlots(src) {
   const mask = new Uint8Array(N);
   for (let i = 0; i < N; i++) mask[i] = data[i * 4 + 3] < 128 ? 1 : 0;
 
-  const seen = new Uint8Array(N);
+  const label = new Int32Array(N);
   const stack = new Int32Array(N);
   const minArea = N * 0.002;
   const regions = [];
+  let nextId = 0;
 
   for (let start = 0; start < N; start++) {
-    if (!mask[start] || seen[start]) continue;
+    if (!mask[start] || label[start]) continue;
+    const id = ++nextId;
     let sp = 0, area = 0;
     let x0 = W, y0 = H, x1 = 0, y1 = 0;
-    stack[sp++] = start; seen[start] = 1;
+    stack[sp++] = start; label[start] = id;
     while (sp) {
       const p = stack[--sp];
       const x = p % W, y = (p - x) / W;
       area++;
       if (x < x0) x0 = x; if (x > x1) x1 = x;
       if (y < y0) y0 = y; if (y > y1) y1 = y;
-      if (x > 0 && mask[p - 1] && !seen[p - 1]) { seen[p - 1] = 1; stack[sp++] = p - 1; }
-      if (x < W - 1 && mask[p + 1] && !seen[p + 1]) { seen[p + 1] = 1; stack[sp++] = p + 1; }
-      if (y > 0 && mask[p - W] && !seen[p - W]) { seen[p - W] = 1; stack[sp++] = p - W; }
-      if (y < H - 1 && mask[p + W] && !seen[p + W]) { seen[p + W] = 1; stack[sp++] = p + W; }
+      if (x > 0 && mask[p - 1] && !label[p - 1]) { label[p - 1] = id; stack[sp++] = p - 1; }
+      if (x < W - 1 && mask[p + 1] && !label[p + 1]) { label[p + 1] = id; stack[sp++] = p + 1; }
+      if (y > 0 && mask[p - W] && !label[p - W]) { label[p - W] = id; stack[sp++] = p - W; }
+      if (y < H - 1 && mask[p + W] && !label[p + W]) { label[p + W] = id; stack[sp++] = p + W; }
     }
     const w = x1 - x0 + 1, h = y1 - y0 + 1;
     // Ignora ruído e faixas finas (bordas da imagem, por exemplo)
     if (area < minArea || w < W * 0.02 || h < H * 0.02) continue;
-    regions.push({ x0, y0, w, h });
+    regions.push({ x0, y0, w, h, ...fitRotatedRect(label, id, W, H, x0, y0, x1, y1) });
   }
 
   // Ordem de leitura: linhas (por centro vertical), depois esquerda → direita
@@ -90,15 +92,69 @@ async function detectSlots(src) {
     return a.x0 - b.x0;
   });
 
-  const bleed = 2; // px extras pra não sobrar fresta
-  return regions.map((r, i) => ({
-    id: foundry.utils.randomID(),
-    x: Math.max(0, (r.x0 - bleed) / W),
-    y: Math.max(0, (r.y0 - bleed) / H),
-    w: Math.min(1, (r.w + bleed * 2) / W),
-    h: Math.min(1, (r.h + bleed * 2) / H),
-    user: null
-  }));
+  const bleed = 3; // px extras pra não sobrar fresta
+  return regions.map(r => {
+    const a = r.a + bleed * 2, b = r.b + bleed * 2;
+    return {
+      id: foundry.utils.randomID(),
+      x: (r.cx - a / 2) / W,
+      y: (r.cy - b / 2) / H,
+      w: a / W,
+      h: b / H,
+      rot: r.rot,
+      user: null
+    };
+  });
+}
+
+/**
+ * Menor retângulo girado (entre -20° e 20°) que cobre todos os pixels da região.
+ * Ângulo em graus, sentido horário (igual ao CSS rotate).
+ */
+function fitRotatedRect(label, id, W, H, x0, y0, x1, y1) {
+  // Só os pixels de borda bastam para o envoltório
+  const xs = [], ys = [];
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const p = y * W + x;
+      if (label[p] !== id) continue;
+      if (x === 0 || y === 0 || x === W - 1 || y === H - 1
+        || label[p - 1] !== id || label[p + 1] !== id || label[p - W] !== id || label[p + W] !== id) {
+        xs.push(x + 0.5); ys.push(y + 0.5);
+      }
+    }
+  }
+  const n = xs.length;
+  const measure = deg => {
+    const t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const u = xs[i] * c + ys[i] * s, v = -xs[i] * s + ys[i] * c;
+      if (u < u0) u0 = u; if (u > u1) u1 = u;
+      if (v < v0) v0 = v; if (v > v1) v1 = v;
+    }
+    const uc = (u0 + u1) / 2, vc = (v0 + v1) / 2;
+    return {
+      area: (u1 - u0 + 1) * (v1 - v0 + 1),
+      a: u1 - u0 + 1, b: v1 - v0 + 1,
+      cx: uc * c - vc * s, cy: uc * s + vc * c, rot: deg
+    };
+  };
+  let best = measure(0);
+  for (let d = -20; d <= 20; d += 0.25) {
+    const m = measure(d);
+    if (m.area < best.area) best = m;
+  }
+  // Refino fino em volta do melhor
+  for (let d = best.rot - 0.25; d <= best.rot + 0.25; d += 0.05) {
+    const m = measure(d);
+    if (m.area < best.area) best = m;
+  }
+  // Se quase não muda nada, prefere reto
+  const flat = measure(0);
+  if (flat.area <= best.area * 1.01) best = flat;
+  best.rot = Math.round(best.rot * 100) / 100;
+  return best;
 }
 
 /* -------------------------------------------- */
@@ -218,7 +274,8 @@ const Overlay = {
       el.dataset.slot = slot.id;
       Object.assign(el.style, {
         left: `${slot.x * 100}%`, top: `${slot.y * 100}%`,
-        width: `${slot.w * 100}%`, height: `${slot.h * 100}%`
+        width: `${slot.w * 100}%`, height: `${slot.h * 100}%`,
+        transform: `rotate(${slot.rot || 0}deg)`
       });
       const video = document.createElement("video");
       video.autoplay = true; video.muted = true; video.playsInline = true;
@@ -372,7 +429,7 @@ const Editor = {
           </div>
         </div>
         <div class="mdc-ed-canvas"><div class="mdc-ed-stage"></div></div>
-        <p class="mdc-ed-hint">Arraste uma área para mover; use o canto inferior direito para redimensionar. Escolha quem fica em cada área no menu dela.</p>
+        <p class="mdc-ed-hint">Arraste a área para mover. Quadrado amarelo (canto inferior direito): redimensionar. Bolinha no topo: girar (Shift = graus inteiros). Você também pode digitar o ângulo.</p>
         <footer>
           <label class="mdc-ed-check"><input type="checkbox" name="ativa"> Mesa ativa para todos</label>
           <span class="mdc-ed-spacer"></span>
@@ -454,7 +511,7 @@ const Editor = {
   },
 
   addSlot() {
-    this.cfg.slots.push({ id: foundry.utils.randomID(), x: 0.4, y: 0.4, w: 0.2, h: 0.2, user: null });
+    this.cfg.slots.push({ id: foundry.utils.randomID(), x: 0.4, y: 0.4, w: 0.2, h: 0.2, rot: 0, user: null });
     this.renderStage();
   },
 
@@ -494,12 +551,27 @@ const Editor = {
       box.innerHTML = `
         <span class="mdc-ed-num">${i + 1}</span>
         <button type="button" class="mdc-ed-del" title="Remover área"><i class="fas fa-trash"></i></button>
-        <select class="mdc-ed-user">${userOptions}</select>
+        <div class="mdc-ed-fields">
+          <select class="mdc-ed-user">${userOptions}</select>
+          <label class="mdc-ed-rot" title="Giro em graus">
+            <i class="fas fa-rotate"></i>
+            <input type="number" step="0.5" min="-180" max="180" value="${slot.rot || 0}">°
+          </label>
+        </div>
+        <span class="mdc-ed-rothandle" title="Arraste para girar"></span>
         <span class="mdc-ed-handle"></span>`;
       const sel = box.querySelector("select");
       sel.value = slot.user ?? "";
       sel.addEventListener("change", () => { slot.user = sel.value || null; });
-      sel.addEventListener("pointerdown", ev => ev.stopPropagation());
+      const rotInput = box.querySelector(".mdc-ed-rot input");
+      rotInput.addEventListener("input", () => {
+        slot.rot = Number(rotInput.value) || 0;
+        this.placeBox(box, slot);
+      });
+      for (const el of [sel, rotInput]) {
+        el.addEventListener("pointerdown", ev => ev.stopPropagation());
+        el.addEventListener("keydown", ev => ev.stopPropagation());
+      }
       box.querySelector(".mdc-ed-del").addEventListener("pointerdown", ev => ev.stopPropagation());
       box.querySelector(".mdc-ed-del").addEventListener("click", () => {
         this.cfg.slots = this.cfg.slots.filter(s => s.id !== slot.id);
@@ -513,20 +585,32 @@ const Editor = {
   placeBox(box, slot) {
     Object.assign(box.style, {
       left: `${slot.x * 100}%`, top: `${slot.y * 100}%`,
-      width: `${slot.w * 100}%`, height: `${slot.h * 100}%`
+      width: `${slot.w * 100}%`, height: `${slot.h * 100}%`,
+      transform: `rotate(${slot.rot || 0}deg)`
     });
+    const inp = box.querySelector(".mdc-ed-rot input");
+    if (inp && document.activeElement !== inp) inp.value = slot.rot || 0;
   },
 
   startDrag(ev, box, slot, stage) {
     ev.preventDefault();
     const resize = ev.target.classList.contains("mdc-ed-handle");
+    const rotate = ev.target.classList.contains("mdc-ed-rothandle");
     const rect = stage.getBoundingClientRect();
     const sx = ev.clientX, sy = ev.clientY;
     const o = { ...slot };
     const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+    const cx = rect.left + (slot.x + slot.w / 2) * rect.width;
+    const cy = rect.top + (slot.y + slot.h / 2) * rect.height;
+    const a0 = Math.atan2(sy - cy, sx - cx);
     const move = e => {
       const dx = (e.clientX - sx) / rect.width, dy = (e.clientY - sy) / rect.height;
-      if (resize) {
+      if (rotate) {
+        const a = Math.atan2(e.clientY - cy, e.clientX - cx);
+        let deg = (o.rot || 0) + (a - a0) * 180 / Math.PI;
+        if (e.shiftKey) deg = Math.round(deg);
+        slot.rot = Math.round(deg * 10) / 10;
+      } else if (resize) {
         slot.w = clamp(o.w + dx, 0.02, 1 - o.x);
         slot.h = clamp(o.h + dy, 0.02, 1 - o.y);
       } else {
