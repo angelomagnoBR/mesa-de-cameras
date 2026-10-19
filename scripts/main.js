@@ -166,22 +166,55 @@ function dockViewFor(userId) {
     ?? document.querySelector(`.camera-view[data-user="${userId}"]`);
 }
 
-function streamFor(userId) {
-  // 1º: o stream que o próprio Foundry está exibindo no dock (é o mais confiável)
-  const v = dockViewFor(userId)?.querySelector("video");
-  if (v?.srcObject instanceof MediaStream && hasLiveVideo(v.srcObject)) return v.srcObject;
-  let stream = null;
-  try { stream = game.webrtc?.client?.getMediaStreamForUser?.(userId) ?? null; } catch (e) { /* ignora */ }
-  if (!stream && v?.srcObject) stream = v.srcObject;
-  if (!stream && userId === game.user.id) {
-    try { stream = game.webrtc?.client?.localStream ?? null; } catch (e) { /* ignora */ }
-  }
-  return stream;
+function dockVideoFor(userId) {
+  const view = dockViewFor(userId);
+  if (!view) return null;
+  if (view instanceof HTMLVideoElement) return view;
+  return view.querySelector("video.user-video") ?? view.querySelector("video.user-camera") ?? view.querySelector("video");
 }
 
-/** Identifica o stream pelas trilhas de vídeo, não pelo objeto (alguns clientes recriam o objeto). */
-function streamKey(stream) {
-  return stream?.getVideoTracks?.().map(t => t.id).join("|") ?? "";
+/** Cliente do LiveKit (módulo avclient-livekit), se estiver em uso. */
+function liveKit() {
+  return game.webrtc?.client?._liveKitClient ?? null;
+}
+
+function liveKitTrackFor(userId) {
+  try { return liveKit()?.getUserVideoTrack?.(userId) ?? null; } catch (e) { return null; }
+}
+
+const isLive = t => !!t && t.readyState === "live";
+
+/**
+ * Devolve a trilha de vídeo (MediaStreamTrack) do usuário.
+ * A mesa monta o próprio MediaStream com ela, em vez de reaproveitar o do dock:
+ * o LiveKit remove a trilha do stream do dock sempre que redesenha as câmeras.
+ */
+function videoTrackFor(userId) {
+  const lk = liveKitTrackFor(userId)?.mediaStreamTrack;
+  if (isLive(lk)) return lk;
+  const dock = dockVideoFor(userId)?.srcObject;
+  const fromDock = dock?.getVideoTracks?.().find(isLive);
+  if (fromDock) return fromDock;
+  try {
+    const s = game.webrtc?.client?.getMediaStreamForUser?.(userId);
+    const t = s?.getVideoTracks?.().find(isLive);
+    if (t) return t;
+  } catch (e) { /* ignora */ }
+  if (userId === game.user.id) {
+    try {
+      const t = game.webrtc?.client?.localStream?.getVideoTracks?.().find(isLive);
+      if (t) return t;
+    } catch (e) { /* ignora */ }
+  }
+  return null;
+}
+
+/** Stream local (para ligar/desligar a própria câmera e microfone). */
+function streamFor(userId) {
+  const dock = dockVideoFor(userId)?.srcObject;
+  if (dock instanceof MediaStream) return dock;
+  try { return game.webrtc?.client?.getMediaStreamForUser?.(userId) ?? game.webrtc?.client?.localStream ?? null; }
+  catch (e) { return null; }
 }
 
 function rtcUser(userId) {
@@ -192,18 +225,52 @@ function cameraOffByFlag(user) {
   return !!user?.getFlag?.(MOD, "cameraOff");
 }
 
-function hasLiveVideo(stream) {
-  return !!stream?.getVideoTracks?.().some(t => t.readyState === "live");
-}
-
-function videoVisible(user, stream) {
+function videoVisible(user, track) {
   if (!user?.active) return false;
   if (cameraOffByFlag(user)) return false;
   const rs = rtcUser(user.id);
   if (rs?.hidden) return false;
   if (rs && rs.canBroadcastVideo === false) return false;
-  if (dockViewFor(user.id)?.classList.contains("no-video")) return false;
-  return hasLiveVideo(stream);
+  const view = dockViewFor(user.id);
+  if (view && !(view instanceof HTMLVideoElement) && view.classList.contains("no-video")) return false;
+  return isLive(track);
+}
+
+/**
+ * Integração com o "adaptive stream" do LiveKit: avisa que a foto da mesa está
+ * na tela e qual o tamanho dela. Assim o LiveKit não pausa o vídeo quando o dock
+ * está escondido e manda a qualidade certa para o tamanho da polaroid.
+ */
+function liveKitObserve(slotData, userId) {
+  const lkTrack = liveKitTrackFor(userId);
+  if (slotData.lkTrack === lkTrack) return;
+  liveKitUnobserve(slotData);
+  if (!lkTrack || typeof lkTrack.observeElementInfo !== "function") return;
+  const { video, el } = slotData;
+  const info = {
+    element: video,
+    visibilityChangedAt: 0,
+    pictureInPicture: false,
+    get visible() { return video.isConnected && !el.classList.contains("mdc-novideo"); },
+    width: () => video.clientWidth || el.clientWidth,
+    height: () => video.clientHeight || el.clientHeight,
+    observe() {},
+    stopObserving() {}
+  };
+  try {
+    lkTrack.observeElementInfo(info);
+    slotData.lkTrack = lkTrack;
+    slotData.lkInfo = info;
+  } catch (e) {
+    console.warn(`${MOD} | não consegui registrar no LiveKit`, e);
+  }
+}
+
+function liveKitUnobserve(slotData) {
+  try { slotData.lkTrack?.stopObservingElementInfo?.(slotData.lkInfo); } catch (e) { /* ignora */ }
+  slotData.lkTrack = null;
+  slotData.lkInfo = null;
+  slotData.lkVisible = undefined;
 }
 
 function fallbackImage(user) {
@@ -339,13 +406,18 @@ const Overlay = {
       width: `${sw}px`, height: `${sh}px`,
       left: `${(W - sw) / 2}px`, top: `${(H - sh) / 2}px`
     });
+    for (const d of this.slotEls.values()) {
+      try { d.lkInfo?.handleResize?.(); } catch (e) { /* ignora */ }
+    }
   },
 
   refresh() {
     if (!this.root) return;
-    for (const { el, video, fb, ctrl, slot } of this.slotEls.values()) {
+    for (const slotData of this.slotEls.values()) {
+      const { el, video, fb, ctrl, slot } = slotData;
       const user = slot.user ? game.users.get(slot.user) : null;
       if (!user) {
+        liveKitUnobserve(slotData);
         el.classList.add("mdc-empty");
         ctrl.classList.remove("mdc-mine");
         if (video.srcObject) video.srcObject = null;
@@ -360,9 +432,9 @@ const Overlay = {
         streamFor(user.id)?.getVideoTracks?.().forEach(t => { if (t.enabled) t.enabled = false; });
       }
 
-      const stream = streamFor(user.id);
+      const track = videoTrackFor(user.id);
       const now = Date.now();
-      let show = videoVisible(user, stream);
+      let show = videoVisible(user, track);
 
       // Evita piscar: uma queda rápida do sinal não apaga a câmera.
       // Só desliga depois de ~2s seguidos sem vídeo (ou na hora, se o jogador desligou).
@@ -372,28 +444,35 @@ const Overlay = {
         if (now - video._offSince < 2000) show = true;
       }
 
-      if (show && stream) {
-        const key = streamKey(stream);
-        if (video._key !== key) {
-          video._key = key;
+      if (show && track) {
+        // Remonta o stream se a trilha mudou ou se alguém tirou a trilha dele
+        const cur = video.srcObject;
+        const ok = cur instanceof MediaStream && cur.getVideoTracks().some(t => t === track);
+        if (!ok) {
+          video.srcObject = new MediaStream([track]);
           video._assignedAt = now;
           video._kicked = false;
-          video.srcObject = stream;
         }
         if (video.paused) video.play?.().catch(() => {});
         // Vídeo travado sem quadros: reconecta uma vez
         if (video.readyState < 2 && !video._kicked && now - video._assignedAt > 4000) {
           video._kicked = true;
           video._assignedAt = now;
-          video.srcObject = null;
-          video.srcObject = stream;
+          video.srcObject = new MediaStream([track]);
           video.play?.().catch(() => {});
         }
-      } else if (!show && video.srcObject) {
+      } else if (!show && video.srcObject && !(video._offSince && now - video._offSince < 2000)) {
         video.srcObject = null;
-        video._key = "";
       }
+      if (!mine) liveKitObserve(slotData, user.id);
       el.classList.toggle("mdc-novideo", !show || !video.srcObject);
+      // Avisa o LiveKit quando a foto passa a mostrar (ou não) o vídeo
+      const vis = !!slotData.lkInfo?.visible;
+      if (slotData.lkInfo && slotData.lkVisible !== vis) {
+        slotData.lkVisible = vis;
+        slotData.lkInfo.visibilityChangedAt = now;
+        try { slotData.lkInfo.handleVisibilityChanged?.(); } catch (e) { /* ignora */ }
+      }
       const src = fallbackImage(user);
       if (fb.getAttribute("src") !== src) fb.setAttribute("src", src);
       // Espelha a própria câmera, como o Foundry faz
@@ -412,7 +491,7 @@ const Overlay = {
 
   destroy() {
     clearInterval(this.timer); this.timer = null;
-    for (const { video } of this.slotEls.values()) video.srcObject = null;
+    for (const d of this.slotEls.values()) { liveKitUnobserve(d); d.video.srcObject = null; }
     this.slotEls.clear();
     this.root?.remove();
     this.root = this.stage = this.art = null;
