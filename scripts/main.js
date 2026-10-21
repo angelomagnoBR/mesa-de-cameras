@@ -1,6 +1,6 @@
 /**
  * Mesa de Câmeras — Foundry VTT v12 / v13
- * Coloca as câmeras dos usuários atrás das áreas transparentes de uma arte PNG.
+ * Coloca as câmeras dos usuários atrás das áreas transparentes da imagem de fundo da cena.
  */
 
 const MOD = "mesa-de-cameras";
@@ -10,19 +10,36 @@ const POLL_MS = 700;
 /*  Configuração                                */
 /* -------------------------------------------- */
 
-const DEFAULT_CONFIG = { image: "", fit: "contain", slots: [] };
-
-function getConfig() {
-  const cfg = game.settings.get(MOD, "config") ?? {};
-  return foundry.utils.mergeObject(foundry.utils.deepClone(DEFAULT_CONFIG), cfg, { inplace: false });
+/** Configuração da mesa guardada na própria cena. */
+function sceneCfg(scene = canvas?.scene) {
+  const f = scene?.getFlag?.(MOD, "mesa") ?? {};
+  return { ativa: !!f.ativa, slots: foundry.utils.deepClone(f.slots ?? []) };
 }
 
-async function setConfig(cfg) {
-  return game.settings.set(MOD, "config", cfg);
+async function setSceneCfg(scene, cfg) {
+  return scene.update({ [`flags.${MOD}.mesa`]: { ativa: !!cfg.ativa, slots: cfg.slots } });
+}
+
+/** A arte da mesa é a imagem de fundo da cena. */
+function sceneImage(scene = canvas?.scene) {
+  return scene?.background?.src ?? scene?.img ?? "";
 }
 
 function isActive() {
-  return game.settings.get(MOD, "ativa") && !game.settings.get(MOD, "ocultarParaMim");
+  const scene = canvas?.scene;
+  return !!scene && sceneCfg(scene).ativa && !!sceneImage(scene) && !game.settings.get(MOD, "ocultarParaMim");
+}
+
+async function toggleSceneMesa(on) {
+  const scene = canvas?.scene;
+  if (!scene || !game.user.isGM) return;
+  const cfg = sceneCfg(scene);
+  cfg.ativa = on ?? !cfg.ativa;
+  if (cfg.ativa && !cfg.slots.length) {
+    ui.notifications.warn("Mesa de Câmeras: configure as áreas desta cena primeiro.");
+    return Editor.open();
+  }
+  await setSceneCfg(scene, cfg);
 }
 
 /* -------------------------------------------- */
@@ -246,14 +263,14 @@ function liveKitObserve(slotData, userId) {
   if (slotData.lkTrack === lkTrack) return;
   liveKitUnobserve(slotData);
   if (!lkTrack || typeof lkTrack.observeElementInfo !== "function") return;
-  const { video, el } = slotData;
+  const { video } = slotData;
   const info = {
     element: video,
     visibilityChangedAt: 0,
     pictureInPicture: false,
-    get visible() { return video.isConnected && !el.classList.contains("mdc-novideo"); },
-    width: () => video.clientWidth || el.clientWidth,
-    height: () => video.clientHeight || el.clientHeight,
+    get visible() { return !!slotData.showing; },
+    width: () => Math.round((slotData.w || 0) * (canvas?.stage?.scale?.x || 1)),
+    height: () => Math.round((slotData.h || 0) * (canvas?.stage?.scale?.y || 1)),
     observe() {},
     stopObserving() {}
   };
@@ -316,180 +333,216 @@ async function toggleMyMic() {
 }
 
 /* -------------------------------------------- */
-/*  Canvas transparente                         */
+/*  Mesa dentro do canvas                       */
 /* -------------------------------------------- */
 
-let warnedNoAlpha = false;
-
-/**
- * Com a mesa ativa, o canvas do Foundry fica transparente (sem cor de fundo e
- * sem a imagem de fundo da cena). A mesa aparece por trás, e tokens, desenhos,
- * textos e réguas continuam por cima, normalmente.
+/*
+ * As câmeras são desenhadas DENTRO do canvas do Foundry, numa camada logo
+ * abaixo da imagem de fundo da cena. Os buracos transparentes do fundo deixam
+ * as câmeras aparecerem, e tudo o que o Foundry desenha (tokens, desenhos,
+ * textos, réguas, iluminação) continua por cima, normalmente.
  */
-function applyCanvasTransparency() {
-  const on = !!Overlay.root;
-  const r = canvas?.app?.renderer;
-  if (!r) return;
 
-  if (on && !warnedNoAlpha) {
-    const attrs = r.gl?.getContextAttributes?.();
-    if (attrs && attrs.alpha === false) {
-      warnedNoAlpha = true;
-      ui.notifications?.warn("Mesa de Câmeras: recarregue a página (F5) para os tokens e desenhos aparecerem por cima da mesa.");
-    }
-  }
+const textureCache = new Map();
 
-  const alpha = on ? 0 : 1;
-  if (r.background && r.background.alpha !== alpha) r.background.alpha = alpha;
-
-  const p = canvas.primary;
-  if (p) {
-    if (on) {
-      const c = p.clearColor;
-      if (!c || c[3] !== 0) {
-        if (c) p._mdcClear = [...c];
-        p.clearColor = [0, 0, 0, 0];
-      }
-    } else if (p._mdcClear) {
-      p.clearColor = p._mdcClear;
-      p._mdcClear = null;
-    }
-    if (p.background && p.background.visible === on) p.background.visible = !on;
-  }
+async function loadTex(src) {
+  if (!src) return null;
+  if (textureCache.has(src)) return textureCache.get(src);
+  const fn = foundry.canvas?.loadTexture ?? globalThis.loadTexture;
+  let tex = null;
+  try { tex = await fn(src); } catch (e) { tex = null; }
+  textureCache.set(src, tex);
+  return tex;
 }
 
-/* -------------------------------------------- */
-/*  Overlay                                     */
-/* -------------------------------------------- */
+function sceneRect() {
+  const d = canvas?.dimensions;
+  return d?.sceneRect ?? new PIXI.Rectangle(d?.sceneX ?? 0, d?.sceneY ?? 0, d?.sceneWidth ?? 0, d?.sceneHeight ?? 0);
+}
+
+/** Ajusta um sprite para cobrir w×h (cortando o excesso), opcionalmente espelhado. */
+function coverSprite(sprite, w, h, mirror) {
+  const tw = sprite.texture?.width || 0, th = sprite.texture?.height || 0;
+  if (!tw || !th) { sprite.visible = false; return false; }
+  const s = Math.max(w / tw, h / th);
+  sprite.scale.set(mirror ? -s : s, s);
+  return true;
+}
 
 const Overlay = {
-  root: null,
-  stage: null,
-  art: null,
+  layer: null,
+  front: null,
+  videos: null,
   slotEls: new Map(),
   timer: null,
-  imgSize: { w: 1920, h: 1080 },
+  root: null,
 
-  async build() {
+  build() {
     this.destroy();
-    const cfg = getConfig();
-    document.body.classList.toggle("mdc-active", isActive() && !!cfg.image);
-    document.body.classList.toggle("mdc-hide-dock", isActive() && !!cfg.image && game.settings.get(MOD, "esconderDock"));
-    if (!isActive() || !cfg.image) return;
+    const on = isActive();
+    document.body.classList.toggle("mdc-active", on);
+    document.body.classList.toggle("mdc-hide-dock", on && game.settings.get(MOD, "esconderDock"));
+    if (!on) return;
+    const primary = canvas?.primary;
+    if (!primary) return;
 
-    const root = document.createElement("div");
-    root.id = "mdc-overlay";
-    const stage = document.createElement("div");
-    stage.className = "mdc-stage";
-    root.appendChild(stage);
+    const cfg = sceneCfg();
 
-    // Camada da frente: só os botões do próprio jogador, por cima do canvas
+    // Camada PIXI com as câmeras
+    // Usa o contêiner próprio do grupo primário do Foundry quando existir
+    const PCC = foundry.canvas?.primary?.PrimaryCanvasContainer ?? globalThis.PrimaryCanvasContainer;
+    let layer;
+    try { layer = PCC ? new PCC() : new PIXI.Container(); } catch (e) { layer = new PIXI.Container(); }
+    layer.name = "mesa-de-cameras";
+    layer.eventMode = "none";
+    this.layer = layer;
+
+    // Vídeos ficam num cantinho invisível do DOM; o canvas desenha a partir deles
+    const videos = document.createElement("div");
+    videos.id = "mdc-videos";
+    document.body.appendChild(videos);
+    this.videos = videos;
+
+    // Botões de câmera/microfone por cima do canvas
     const front = document.createElement("div");
     front.id = "mdc-front";
-    const frontStage = document.createElement("div");
-    frontStage.className = "mdc-stage";
-    front.appendChild(frontStage);
+    const board = document.getElementById("board");
+    if (board) board.insertAdjacentElement("afterend", front);
+    else document.body.appendChild(front);
+    this.front = front;
+    this.root = front;
 
     for (const slot of cfg.slots) {
-      const el = document.createElement("div");
-      el.className = "mdc-slot";
-      el.dataset.slot = slot.id;
-      Object.assign(el.style, {
-        left: `${slot.x * 100}%`, top: `${slot.y * 100}%`,
-        width: `${slot.w * 100}%`, height: `${slot.h * 100}%`,
-        transform: `rotate(${slot.rot || 0}deg)`
-      });
       const video = document.createElement("video");
       video.autoplay = true; video.muted = true; video.playsInline = true;
-      const fb = document.createElement("img");
-      fb.className = "mdc-fallback";
-      el.append(video, fb);
-      stage.appendChild(el);
+      videos.appendChild(video);
+
+      const box = new PIXI.Container();
+      const backdrop = new PIXI.Graphics();
+      const mask = new PIXI.Graphics();
+      const vSprite = new PIXI.Sprite(PIXI.Texture.EMPTY);
+      const fSprite = new PIXI.Sprite(PIXI.Texture.EMPTY);
+      vSprite.anchor.set(0.5); fSprite.anchor.set(0.5);
+      vSprite.visible = fSprite.visible = false;
+      const content = new PIXI.Container();
+      content.addChild(backdrop, fSprite, vSprite);
+      content.mask = mask;
+      box.addChild(content, mask);
+      layer.addChild(box);
 
       const ctrl = document.createElement("div");
       ctrl.className = "mdc-controls";
-      ctrl.dataset.slot = slot.id;
-      ctrl.style.cssText = el.style.cssText;
       ctrl.innerHTML = `
-        <div class="mdc-buttons">
-          <button type="button" data-act="cam" title="Ligar/desligar minha câmera"><i class="fas fa-video"></i></button>
-          <button type="button" data-act="mic" title="Ligar/desligar meu microfone"><i class="fas fa-microphone"></i></button>
-        </div>`;
+        <button type="button" data-act="cam" title="Ligar/desligar minha câmera"><i class="fas fa-video"></i></button>
+        <button type="button" data-act="mic" title="Ligar/desligar meu microfone"><i class="fas fa-microphone"></i></button>`;
       ctrl.addEventListener("click", ev => {
         const act = ev.target.closest("button")?.dataset.act;
         if (act === "cam") toggleMyCamera();
         if (act === "mic") toggleMyMic();
       });
-      frontStage.appendChild(ctrl);
+      front.appendChild(ctrl);
 
-      this.slotEls.set(slot.id, { el, video, fb, ctrl, slot });
+      this.slotEls.set(slot.id, {
+        slot, video, box, backdrop, mask, vSprite, fSprite, ctrl,
+        el: { classList: { contains: () => false } }, // compatibilidade com liveKitObserve
+        w: 0, h: 0, showing: false, vTex: null, fbSrc: null
+      });
     }
 
-    const art = document.createElement("img");
-    art.className = "mdc-art";
-    art.src = cfg.image;
-    art.addEventListener("load", () => {
-      this.imgSize = { w: art.naturalWidth, h: art.naturalHeight };
-      this.layout();
-    });
-    stage.appendChild(art);
-
-    // A mesa fica ATRÁS do canvas do Foundry (que fica transparente),
-    // assim tokens, desenhos e textos aparecem por cima dela.
-    const board = document.getElementById("board");
-    if (board?.parentElement) {
-      board.insertAdjacentElement("beforebegin", root);
-      board.insertAdjacentElement("afterend", front);
-    } else {
-      document.body.prepend(root);
-      document.body.append(front);
-    }
-
-    this.root = root; this.front = front; this.stage = stage; this.frontStage = frontStage; this.art = art;
-    applyCanvasTransparency();
-    this.fit = cfg.fit;
+    this.attachLayer();
     this.layout();
     this.refresh();
     this.timer = setInterval(() => this.refresh(), POLL_MS);
   },
 
-  layout() {
-    if (!this.stage) return;
-    const W = window.innerWidth, H = window.innerHeight;
-    const { w, h } = this.imgSize;
-    const s = this.fit === "cover" ? Math.max(W / w, H / h)
-      : this.fit === "stretch" ? null : Math.min(W / w, H / h);
-    const sw = s ? w * s : W, sh = s ? h * s : H;
-    for (const st of [this.stage, this.frontStage]) {
-      if (!st) continue;
-      Object.assign(st.style, {
-        width: `${sw}px`, height: `${sh}px`,
-        left: `${(W - sw) / 2}px`, top: `${(H - sh) / 2}px`
-      });
+  /** Põe a camada dentro do grupo primário, logo abaixo do fundo da cena. */
+  attachLayer() {
+    const p = canvas.primary;
+    const bg = p.background;
+    const layer = this.layer;
+    layer.elevation = (bg?.elevation ?? 0) - 1;
+    layer.sortLayer = -1;
+    layer.sort = -1e9;
+    layer.zIndex = -1e9;
+    p.addChild(layer);
+    if (!p._mdcSortPatched) {
+      const orig = p.sortChildren;
+      p.sortChildren = function(...args) {
+        const r = orig.apply(this, args);
+        Overlay.fixOrder();
+        return r;
+      };
+      p._mdcSortPatched = true;
     }
+    p.sortDirty = true;
+    this.fixOrder();
+  },
+
+  /** Garante que a camada fique antes (abaixo) do fundo da cena. */
+  fixOrder() {
+    const p = canvas?.primary, layer = this.layer;
+    if (!p || !layer || layer.destroyed || layer.parent !== p) return;
+    const bg = p.background;
+    const iB = bg ? p.children.indexOf(bg) : -1;
+    const iL = p.children.indexOf(layer);
+    if (iB < 0) { if (iL !== 0) { p.children.splice(iL, 1); p.children.unshift(layer); } return; }
+    if (iL > iB) {
+      p.children.splice(iL, 1);
+      p.children.splice(iB, 0, layer);
+    }
+  },
+
+  layout() {
+    if (!this.layer) return;
+    const r = sceneRect();
     for (const d of this.slotEls.values()) {
+      const { slot, box, mask, backdrop } = d;
+      const w = slot.w * r.width, h = slot.h * r.height;
+      box.position.set(r.x + (slot.x + slot.w / 2) * r.width, r.y + (slot.y + slot.h / 2) * r.height);
+      box.rotation = (slot.rot || 0) * Math.PI / 180;
+      mask.clear().beginFill(0xffffff).drawRect(-w / 2, -h / 2, w, h).endFill();
+      backdrop.clear().beginFill(0x111111).drawRect(-w / 2, -h / 2, w, h).endFill();
+      d.w = w; d.h = h;
       try { d.lkInfo?.handleResize?.(); } catch (e) { /* ignora */ }
+    }
+    this.placeControls();
+  },
+
+  /** Posiciona os botões na tela, na parte de baixo de cada foto. */
+  placeControls() {
+    const t = canvas?.stage?.worldTransform;
+    if (!t) return;
+    for (const d of this.slotEls.values()) {
+      const a = d.box.rotation, c = Math.cos(a), s = Math.sin(a);
+      const ly = d.h / 2 - 8;
+      const wx = d.box.x - s * ly, wy = d.box.y + c * ly;
+      const p = t.apply(new PIXI.Point(wx, wy));
+      d.ctrl.style.left = `${p.x}px`;
+      d.ctrl.style.top = `${p.y}px`;
     }
   },
 
   refresh() {
-    if (!this.root) return;
-    applyCanvasTransparency();
-    for (const slotData of this.slotEls.values()) {
-      const { el, video, fb, ctrl, slot } = slotData;
+    if (!this.layer) return;
+    if (this.layer.destroyed) return this.build();
+    if (this.layer.parent !== canvas.primary) this.attachLayer();
+    this.fixOrder();
+
+    for (const d of this.slotEls.values()) {
+      const { slot, video, ctrl, vSprite, fSprite, backdrop } = d;
       const user = slot.user ? game.users.get(slot.user) : null;
       if (!user) {
-        liveKitUnobserve(slotData);
-        el.classList.add("mdc-empty");
+        liveKitUnobserve(d);
         ctrl.classList.remove("mdc-mine");
         if (video.srcObject) video.srcObject = null;
+        vSprite.visible = fSprite.visible = backdrop.visible = false;
+        d.showing = false;
         continue;
       }
-      el.classList.remove("mdc-empty");
+      backdrop.visible = true;
       const mine = user.id === game.user.id;
       ctrl.classList.toggle("mdc-mine", mine);
 
-      // Mantém a trilha local desligada se o jogador desligou pela mesa
       if (mine && cameraOffByFlag(user)) {
         streamFor(user.id)?.getVideoTracks?.().forEach(t => { if (t.enabled) t.enabled = false; });
       }
@@ -497,9 +550,6 @@ const Overlay = {
       const track = videoTrackFor(user.id);
       const now = Date.now();
       let show = videoVisible(user, track);
-
-      // Evita piscar: uma queda rápida do sinal não apaga a câmera.
-      // Só desliga depois de ~2s seguidos sem vídeo (ou na hora, se o jogador desligou).
       if (show) video._offSince = 0;
       else if (!cameraOffByFlag(user) && user.active && video.srcObject) {
         video._offSince ||= now;
@@ -507,58 +557,93 @@ const Overlay = {
       }
 
       if (show && track) {
-        // Remonta o stream se a trilha mudou ou se alguém tirou a trilha dele
         const cur = video.srcObject;
         const ok = cur instanceof MediaStream && cur.getVideoTracks().some(t => t === track);
         if (!ok) {
           video.srcObject = new MediaStream([track]);
           video._assignedAt = now;
           video._kicked = false;
+          this.resetVideoTexture(d);
         }
         if (video.paused) video.play?.().catch(() => {});
-        // Vídeo travado sem quadros: reconecta uma vez
         if (video.readyState < 2 && !video._kicked && now - video._assignedAt > 4000) {
           video._kicked = true;
           video._assignedAt = now;
           video.srcObject = new MediaStream([track]);
+          this.resetVideoTexture(d);
           video.play?.().catch(() => {});
         }
       } else if (!show && video.srcObject && !(video._offSince && now - video._offSince < 2000)) {
         video.srcObject = null;
+        this.resetVideoTexture(d);
       }
-      if (!mine) liveKitObserve(slotData, user.id);
-      el.classList.toggle("mdc-novideo", !show || !video.srcObject);
-      // Avisa o LiveKit quando a foto passa a mostrar (ou não) o vídeo
-      const vis = !!slotData.lkInfo?.visible;
-      if (slotData.lkInfo && slotData.lkVisible !== vis) {
-        slotData.lkVisible = vis;
-        slotData.lkInfo.visibilityChangedAt = now;
-        try { slotData.lkInfo.handleVisibilityChanged?.(); } catch (e) { /* ignora */ }
+
+      // Textura do vídeo: cria quando o vídeo já tem tamanho
+      if (video.srcObject && !d.vTex && video.videoWidth > 0) {
+        try {
+          d.vTex = PIXI.Texture.from(video, { resourceOptions: { autoPlay: true } });
+          vSprite.texture = d.vTex;
+        } catch (e) { console.warn(`${MOD} | textura de vídeo`, e); }
       }
+      const videoOn = show && !!video.srcObject && !!d.vTex;
+      vSprite.visible = videoOn && coverSprite(vSprite, d.w, d.h, mine);
+
+      // Imagem do personagem quando a câmera está desligada
       const src = fallbackImage(user);
-      if (fb.getAttribute("src") !== src) fb.setAttribute("src", src);
-      // Espelha a própria câmera, como o Foundry faz
-      video.classList.toggle("mdc-mirror", mine);
+      if (d.fbSrc !== src) {
+        d.fbSrc = src;
+        loadTex(src).then(tex => {
+          if (d.fbSrc !== src || fSprite.destroyed) return;
+          fSprite.texture = tex ?? PIXI.Texture.EMPTY;
+          coverSprite(fSprite, d.w, d.h, false);
+        });
+      }
+      fSprite.visible = !vSprite.visible && coverSprite(fSprite, d.w, d.h, false);
+
+      d.showing = vSprite.visible;
+      if (!mine) liveKitObserve(d, user.id);
+      const vis = !!d.lkInfo?.visible;
+      if (d.lkInfo && d.lkVisible !== vis) {
+        d.lkVisible = vis;
+        d.lkInfo.visibilityChangedAt = now;
+        try { d.lkInfo.handleVisibilityChanged?.(); } catch (e) { /* ignora */ }
+      }
 
       if (mine) {
-        ctrl.querySelector('[data-act="cam"]')?.classList.toggle("mdc-off", cameraOffByFlag(user));
-        ctrl.querySelector('[data-act="mic"]')?.classList.toggle("mdc-off", isMyMicMuted());
-        const camIcon = ctrl.querySelector('[data-act="cam"] i');
-        if (camIcon) camIcon.className = cameraOffByFlag(user) ? "fas fa-video-slash" : "fas fa-video";
-        const micIcon = ctrl.querySelector('[data-act="mic"] i');
-        if (micIcon) micIcon.className = isMyMicMuted() ? "fas fa-microphone-slash" : "fas fa-microphone";
+        const camOff = cameraOffByFlag(user), micOff = isMyMicMuted();
+        const cam = ctrl.querySelector('[data-act="cam"]'), mic = ctrl.querySelector('[data-act="mic"]');
+        cam?.classList.toggle("mdc-off", camOff);
+        mic?.classList.toggle("mdc-off", micOff);
+        const ci = cam?.querySelector("i"); if (ci) ci.className = camOff ? "fas fa-video-slash" : "fas fa-video";
+        const mi = mic?.querySelector("i"); if (mi) mi.className = micOff ? "fas fa-microphone-slash" : "fas fa-microphone";
       }
+    }
+    this.placeControls();
+  },
+
+  resetVideoTexture(d) {
+    if (d.vTex) {
+      d.vSprite.texture = PIXI.Texture.EMPTY;
+      try { d.vTex.destroy(true); } catch (e) { /* ignora */ }
+      d.vTex = null;
     }
   },
 
   destroy() {
     clearInterval(this.timer); this.timer = null;
-    for (const d of this.slotEls.values()) { liveKitUnobserve(d); d.video.srcObject = null; }
+    for (const d of this.slotEls.values()) {
+      liveKitUnobserve(d);
+      d.video.srcObject = null;
+      this.resetVideoTexture(d);
+    }
     this.slotEls.clear();
-    this.root?.remove();
-    this.front?.remove();
-    this.root = this.front = this.stage = this.frontStage = this.art = null;
-    applyCanvasTransparency();
+    if (this.layer && !this.layer.destroyed) {
+      this.layer.parent?.removeChild(this.layer);
+      this.layer.destroy({ children: true });
+    }
+    this.layer = null;
+    this.front?.remove(); this.front = this.root = null;
+    this.videos?.remove(); this.videos = null;
   }
 };
 
@@ -574,7 +659,12 @@ const Editor = {
   open() {
     if (!game.user.isGM) return ui.notifications.warn("Só o GM pode configurar a Mesa de Câmeras.");
     this.close();
-    this.cfg = getConfig();
+    const scene = canvas?.scene;
+    if (!scene) return ui.notifications.warn("Abra uma cena primeiro.");
+    const image = sceneImage(scene);
+    if (!image) return ui.notifications.warn("Mesa de Câmeras: coloque a arte (PNG com áreas transparentes) como imagem de fundo desta cena.");
+    this.scene = scene;
+    this.cfg = { ...sceneCfg(scene), image };
     const el = document.createElement("div");
     el.id = "mdc-editor";
     el.innerHTML = `
@@ -584,19 +674,10 @@ const Editor = {
           <button type="button" class="mdc-ed-close" title="Fechar"><i class="fas fa-times"></i></button>
         </header>
         <div class="mdc-ed-toolbar">
-          <label>Arte (PNG)
-            <span class="mdc-ed-row">
-              <input type="text" name="image" placeholder="caminho/da/imagem.png">
-              <button type="button" data-act="browse" title="Procurar"><i class="fas fa-folder-open"></i></button>
-            </span>
-          </label>
-          <label>Ajuste na tela
-            <select name="fit">
-              <option value="contain">Caber inteira (com bordas)</option>
-              <option value="cover">Preencher (pode cortar)</option>
-              <option value="stretch">Esticar</option>
-            </select>
-          </label>
+          <div class="mdc-ed-info">
+            <strong class="mdc-ed-scene"></strong>
+            <span class="mdc-ed-path"></span>
+          </div>
           <div class="mdc-ed-actions">
             <button type="button" data-act="detect"><i class="fas fa-wand-magic-sparkles"></i> Detectar áreas</button>
             <button type="button" data-act="add"><i class="fas fa-plus"></i> Adicionar área</button>
@@ -605,7 +686,7 @@ const Editor = {
         <div class="mdc-ed-canvas"><div class="mdc-ed-stage"></div></div>
         <p class="mdc-ed-hint">Arraste a área para mover. Quadrado amarelo (canto inferior direito): redimensionar. Bolinha no topo: girar (Shift = graus inteiros). Você também pode digitar o ângulo.</p>
         <footer>
-          <label class="mdc-ed-check"><input type="checkbox" name="ativa"> Mesa ativa para todos</label>
+          <label class="mdc-ed-check"><input type="checkbox" name="ativa"> Mesa ativa nesta cena</label>
           <span class="mdc-ed-spacer"></span>
           <button type="button" data-act="cancel">Cancelar</button>
           <button type="button" data-act="save" class="mdc-primary"><i class="fas fa-save"></i> Salvar</button>
@@ -614,17 +695,14 @@ const Editor = {
     document.body.appendChild(el);
     this.el = el;
 
-    el.querySelector('[name="image"]').value = this.cfg.image;
-    el.querySelector('[name="fit"]').value = this.cfg.fit;
-    el.querySelector('[name="ativa"]').checked = game.settings.get(MOD, "ativa");
-
-    el.querySelector('[name="image"]').addEventListener("change", ev => this.setImage(ev.target.value.trim(), false));
+    el.querySelector(".mdc-ed-scene").textContent = `Cena: ${scene.name}`;
+    el.querySelector(".mdc-ed-path").textContent = `Fundo: ${image}`;
+    el.querySelector('[name="ativa"]').checked = this.cfg.ativa;
     el.querySelector(".mdc-ed-close").addEventListener("click", () => this.close());
     el.addEventListener("click", ev => {
       const act = ev.target.closest("button[data-act]")?.dataset.act;
       if (!act) return;
-      if (act === "browse") this.browse();
-      else if (act === "detect") this.detect();
+      if (act === "detect") this.detect();
       else if (act === "add") this.addSlot();
       else if (act === "cancel") this.close();
       else if (act === "save") this.save();
@@ -633,6 +711,7 @@ const Editor = {
     this._onResize = () => this.renderStage();
     window.addEventListener("resize", this._onResize);
     this.renderStage();
+    if (!this.cfg.slots.length) this.detect(true);
   },
 
   close() {
@@ -641,33 +720,8 @@ const Editor = {
     this.el = null;
   },
 
-  browse() {
-    const FP = foundry.applications?.apps?.FilePicker?.implementation ?? globalThis.FilePicker;
-    this.el.style.display = "none";
-    const picker = new FP({
-      type: "image",
-      current: this.cfg.image,
-      callback: path => { this.el.style.display = ""; this.setImage(path, true); }
-    });
-    picker.render(true);
-    // Se o picker for fechado sem escolher, mostra o editor de novo
-    const watch = setInterval(() => {
-      if (!this.el) return clearInterval(watch);
-      if (this.el.style.display !== "none") return clearInterval(watch);
-      const open = picker.rendered ?? picker._state > 0;
-      if (open === false) { this.el.style.display = ""; clearInterval(watch); }
-    }, 400);
-  },
-
-  async setImage(path, autoDetect) {
-    this.cfg.image = path;
-    this.el.querySelector('[name="image"]').value = path;
-    if (autoDetect && path) await this.detect(true);
-    else this.renderStage();
-  },
-
   async detect(quiet = false) {
-    if (!this.cfg.image) return ui.notifications.warn("Escolha uma imagem primeiro.");
+    if (!this.cfg.image) return ui.notifications.warn("A cena não tem imagem de fundo.");
     try {
       const found = await detectSlots(this.cfg.image);
       // Reaproveita os jogadores já escolhidos, pela ordem
@@ -696,7 +750,7 @@ const Editor = {
     stage.innerHTML = "";
     if (!this.cfg.image) {
       stage.style.width = "100%"; stage.style.height = "100%";
-      stage.innerHTML = `<div class="mdc-ed-empty">Escolha a arte PNG para começar.</div>`;
+      stage.innerHTML = `<div class="mdc-ed-empty">Coloque a arte como fundo da cena.</div>`;
       return;
     }
     const img = document.createElement("img");
@@ -802,12 +856,9 @@ const Editor = {
   },
 
   async save() {
-    this.cfg.fit = this.el.querySelector('[name="fit"]').value;
-    this.cfg.image = this.el.querySelector('[name="image"]').value.trim();
     const ativa = this.el.querySelector('[name="ativa"]').checked;
-    await setConfig(this.cfg);
-    if (game.settings.get(MOD, "ativa") !== ativa) await game.settings.set(MOD, "ativa", ativa);
-    ui.notifications.info("Mesa de Câmeras salva.");
+    await setSceneCfg(this.scene, { ativa, slots: this.cfg.slots });
+    ui.notifications.info(`Mesa de Câmeras salva na cena "${this.scene.name}".`);
     this.close();
   }
 };
@@ -830,16 +881,6 @@ function makeMenuClass() {
 Hooks.once("init", () => {
   const rebuild = () => Overlay.build();
 
-  game.settings.register(MOD, "config", {
-    scope: "world", config: false, type: Object, default: DEFAULT_CONFIG,
-    onChange: rebuild
-  });
-  game.settings.register(MOD, "ativa", {
-    name: "Mesa ativa",
-    hint: "Liga a mesa para todos os jogadores.",
-    scope: "world", config: true, type: Boolean, default: false,
-    onChange: rebuild
-  });
   game.settings.register(MOD, "esconderDock", {
     name: "Esconder o dock de câmeras padrão",
     hint: "Enquanto a mesa estiver ativa, o dock normal do Foundry fica invisível. O áudio continua funcionando.",
@@ -848,50 +889,54 @@ Hooks.once("init", () => {
   });
   game.settings.register(MOD, "ocultarParaMim", {
     name: "Ocultar a mesa só para mim",
-    hint: "Esconde a mesa apenas neste computador.",
+    hint: "Esconde as câmeras da mesa apenas neste computador.",
     scope: "client", config: true, type: Boolean, default: false,
     onChange: rebuild
   });
 
   game.settings.registerMenu(MOD, "editor", {
-    name: "Configurar mesa",
+    name: "Configurar mesa da cena atual",
     label: "Abrir editor",
-    hint: "Escolher a arte, detectar as áreas transparentes e definir quem fica em cada uma.",
+    hint: "Detectar as áreas transparentes do fundo da cena e definir quem fica em cada uma.",
     icon: "fas fa-photo-film",
     type: makeMenuClass(),
     restricted: true
   });
 
   game.keybindings.register(MOD, "toggle", {
-    name: "Ligar/desligar a mesa (GM)",
+    name: "Ligar/desligar a mesa na cena atual (GM)",
     editable: [{ key: "KeyM", modifiers: ["Shift"] }],
     restricted: true,
-    onDown: () => { game.settings.set(MOD, "ativa", !game.settings.get(MOD, "ativa")); return true; }
+    onDown: () => { toggleSceneMesa(); return true; }
   });
 });
 
 Hooks.once("ready", () => {
-  window.addEventListener("resize", () => Overlay.layout());
-  Overlay.build();
-
   // Se o jogador tinha deixado a câmera desligada, mantém desligada
   if (cameraOffByFlag(game.user)) setTimeout(() => setLocalVideoTrack(false), 2000);
 
   game.modules.get(MOD).api = {
     openEditor: () => Editor.open(),
-    toggle: () => game.user.isGM && game.settings.set(MOD, "ativa", !game.settings.get(MOD, "ativa")),
+    toggle: on => toggleSceneMesa(on),
     toggleMyCamera,
     toggleMyMic,
     detectSlots
   };
 });
 
-// O canvas precisa ser criado com suporte a transparência (não dá pra mudar depois).
-// Com a mesa desligada, o fundo continua opaco, igual ao normal.
-Hooks.on("canvasConfig", config => {
-  config.backgroundAlpha = 0;
+Hooks.on("canvasReady", () => Overlay.build());
+Hooks.on("canvasTearDown", () => Overlay.destroy());
+Hooks.on("canvasPan", () => Overlay.placeControls());
+window.addEventListener("resize", () => Overlay.placeControls());
+
+Hooks.on("updateScene", (scene, changes) => {
+  if (scene.id !== canvas?.scene?.id) return;
+  if (foundry.utils.hasProperty(changes, `flags.${MOD}`) || foundry.utils.hasProperty(changes, `flags.-=${MOD}`)) {
+    Overlay.build();
+    ui.controls?.render?.();
+  }
 });
-Hooks.on("canvasReady", () => applyCanvasTransparency());
+// Fundo da cena trocado: o Foundry redesenha o canvas e o canvasReady reconstrói a mesa.
 
 Hooks.on("updateUser", (user, changes) => {
   if (changes.flags?.[MOD] || "character" in changes || "avatar" in changes || "active" in changes) Overlay.refresh();
@@ -899,17 +944,17 @@ Hooks.on("updateUser", (user, changes) => {
 Hooks.on("rtcSettingsChanged", () => Overlay.refresh());
 Hooks.on("renderCameraViews", () => Overlay.refresh());
 
-// Botão nos controles da cena (GM): v12 usa array, v13 usa objeto
+// Botões nos controles da cena (GM): v12 usa array, v13 usa objeto
 Hooks.on("getSceneControlButtons", controls => {
   if (!game.user.isGM) return;
-  const active = game.settings.get(MOD, "ativa");
+  const active = sceneCfg().ativa;
   if (Array.isArray(controls)) {
     const token = controls.find(c => c.name === "token");
     if (!token) return;
     token.tools.push(
-      { name: "mdc-toggle", title: "Mesa de Câmeras: ligar/desligar", icon: "fas fa-photo-film",
-        toggle: true, active, onClick: on => game.settings.set(MOD, "ativa", on) },
-      { name: "mdc-editor", title: "Mesa de Câmeras: configurar", icon: "fas fa-sliders",
+      { name: "mdc-toggle", title: "Mesa de Câmeras: ligar/desligar nesta cena", icon: "fas fa-photo-film",
+        toggle: true, active, onClick: on => toggleSceneMesa(on) },
+      { name: "mdc-editor", title: "Mesa de Câmeras: configurar esta cena", icon: "fas fa-sliders",
         button: true, onClick: () => Editor.open() }
     );
   } else {
@@ -917,12 +962,12 @@ Hooks.on("getSceneControlButtons", controls => {
     if (!token?.tools) return;
     const n = Object.keys(token.tools).length;
     token.tools["mdc-toggle"] = {
-      name: "mdc-toggle", title: "Mesa de Câmeras: ligar/desligar", icon: "fas fa-photo-film",
+      name: "mdc-toggle", title: "Mesa de Câmeras: ligar/desligar nesta cena", icon: "fas fa-photo-film",
       order: n + 1, toggle: true, active,
-      onChange: (event, on) => game.settings.set(MOD, "ativa", on)
+      onChange: (event, on) => toggleSceneMesa(on)
     };
     token.tools["mdc-editor"] = {
-      name: "mdc-editor", title: "Mesa de Câmeras: configurar", icon: "fas fa-sliders",
+      name: "mdc-editor", title: "Mesa de Câmeras: configurar esta cena", icon: "fas fa-sliders",
       order: n + 2, button: true,
       onChange: () => Editor.open()
     };

@@ -1,21 +1,21 @@
 /* ===== Mesa de Câmeras ===== */
 
-/* A mesa fica atrás do canvas do Foundry (que fica transparente) */
-#mdc-overlay {
+/* Vídeos usados como fonte para o canvas (não aparecem na tela) */
+#mdc-videos {
   position: fixed;
-  inset: 0;
-  z-index: -1;
-  background: #000;
+  left: 0;
+  top: 0;
+  width: 2px;
+  height: 2px;
   overflow: hidden;
+  opacity: 0.01;
   pointer-events: none;
+  z-index: -1;
 }
 
-#mdc-overlay .mdc-stage,
-#mdc-front .mdc-stage {
-  position: absolute;
-}
+#mdc-videos video { width: 2px; height: 2px; }
 
-/* Camada da frente: só os botões, sem bloquear cliques no canvas */
+/* Botões do próprio jogador, por cima do canvas, sem bloquear cliques */
 #mdc-front {
   position: fixed;
   inset: 0;
@@ -23,85 +23,34 @@
   pointer-events: none;
 }
 
-#mdc-overlay .mdc-slot {
-  position: absolute;
-  z-index: 1;
-  overflow: hidden;
-  background: #111;
-}
-
-#mdc-overlay .mdc-slot.mdc-empty {
-  background: transparent;
-}
-
-#mdc-overlay .mdc-slot video,
-#mdc-overlay .mdc-slot .mdc-fallback {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border: none;
-  max-width: none;
-}
-
-#mdc-overlay .mdc-slot video.mdc-mirror { transform: scaleX(-1); }
-
-#mdc-overlay .mdc-slot .mdc-fallback { display: none; }
-#mdc-overlay .mdc-slot.mdc-novideo video { display: none; }
-#mdc-overlay .mdc-slot.mdc-novideo .mdc-fallback { display: block; }
-#mdc-overlay .mdc-slot.mdc-empty video,
-#mdc-overlay .mdc-slot.mdc-empty .mdc-fallback { display: none; }
-
-#mdc-overlay .mdc-art {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 2;
-  pointer-events: none;
-  user-select: none;
-  border: none;
-  max-width: none;
-}
-
-/* Botões do próprio jogador: aparecem ao passar o mouse na própria foto */
 #mdc-front .mdc-controls {
   position: absolute;
-  z-index: 3;
-  pointer-events: none;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-
-#mdc-front .mdc-buttons {
   display: none;
   gap: 8px;
-  margin-bottom: 10px;
+  transform: translate(-50%, -100%);
   pointer-events: auto;
   opacity: 0.3;
   transition: opacity 0.15s;
 }
 
-#mdc-front .mdc-controls.mdc-mine .mdc-buttons { display: flex; }
-#mdc-front .mdc-buttons:hover { opacity: 1; }
+#mdc-front .mdc-controls.mdc-mine { display: flex; }
+#mdc-front .mdc-controls:hover { opacity: 1; }
 
-#mdc-front .mdc-buttons button {
-  width: 38px;
-  height: 38px;
+#mdc-front .mdc-controls button {
+  width: 34px;
+  height: 34px;
   line-height: 1;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.35);
   background: rgba(0, 0, 0, 0.65);
   color: #f2e6c9;
-  font-size: 15px;
+  font-size: 14px;
   cursor: pointer;
   padding: 0;
 }
 
-#mdc-front .mdc-buttons button:hover { background: rgba(0, 0, 0, 0.85); }
-#mdc-front .mdc-buttons button.mdc-off { background: rgba(150, 20, 20, 0.85); color: #fff; }
+#mdc-front .mdc-controls button:hover { background: rgba(0, 0, 0, 0.85); }
+#mdc-front .mdc-controls button.mdc-off { background: rgba(150, 20, 20, 0.85); color: #fff; }
 
 /* Esconde o dock padrão sem cortar áudio nem vídeo.
    Usa opacidade (e não visibility/display) porque alguns sistemas de chamada,
@@ -170,6 +119,15 @@ body.mdc-hide-dock #camera-views {
   align-items: flex-end;
   padding: 10px 14px;
 }
+
+#mdc-editor .mdc-ed-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+#mdc-editor .mdc-ed-path { font-size: 11px; color: #999; }
 
 #mdc-editor .mdc-ed-toolbar label {
   display: flex;

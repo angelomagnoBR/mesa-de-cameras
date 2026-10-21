@@ -1,6 +1,6 @@
 # Mesa de Câmeras
 
-Módulo para Foundry VTT (v12 e v13) que coloca as câmeras dos jogadores **atrás das áreas transparentes** de uma arte PNG. A arte fica fixa na tela, como uma mesa de stream, e cada câmera aparece "dentro" da moldura desenhada.
+Módulo para Foundry VTT (v12 e v13) que coloca as câmeras dos jogadores **atrás das áreas transparentes da imagem de fundo da cena**. Cada câmera aparece "dentro" da moldura desenhada na arte.
 
 ## Instalação
 
@@ -13,23 +13,21 @@ https://raw.githubusercontent.com/angelomagnoBR/mesa-de-cameras/main/module.json
 ## Como usar
 
 1. Crie a arte em PNG deixando **transparentes** os lugares onde as câmeras devem aparecer.
-2. Coloque o PNG em alguma pasta do Foundry (ex.: `Data/mesas/`).
-3. Como GM, abra o editor: **Configurações → Mesa de Câmeras → Abrir editor**, ou pelo botão na barra de controles de token.
-4. Escolha a arte. O módulo detecta as áreas transparentes sozinho.
-5. Em cada área, escolha qual usuário fica ali (pode ser o GM, ou deixar vazio).
-   O módulo também detecta a **inclinação** de cada área. Para ajustar na mão, digite o ângulo ou arraste a bolinha amarela no topo da área.
-6. Marque **Mesa ativa para todos** e salve.
+2. Coloque essa arte como **imagem de fundo da cena** (Configurar Cena → Fundo).
+3. Com a cena aberta, como GM, clique no botão **Mesa de Câmeras: configurar esta cena** (controles de token) ou vá em **Configurações → Mesa de Câmeras → Abrir editor**.
+4. O módulo detecta as áreas transparentes do fundo sozinho, inclusive a inclinação de cada uma.
+5. Em cada área, escolha qual usuário fica ali (pode ser o GM, ou deixar vazio). Para ajustar na mão: arraste para mover, quadrado amarelo para redimensionar, bolinha amarela no topo ou o campo de graus para girar.
+6. Marque **Mesa ativa nesta cena** e salve.
 
-Atalho do GM para ligar/desligar a mesa: **Shift + M**.
+Cada cena tem a sua própria mesa. Em cenas sem mesa, tudo fica normal.
 
-## Tokens, desenhos e textos
+Atalho do GM para ligar/desligar a mesa da cena atual: **Shift + M**.
 
-A mesa fica **atrás** do canvas do Foundry: tokens, desenhos, textos e réguas aparecem por cima dela normalmente. Com a mesa ativa, a cor e a imagem de fundo da cena ficam escondidas.
+## Como funciona
 
-Dicas para a cena usada com a mesa:
-- Desligue a **Visão de Token** da cena, senão a névoa pode escurecer a tela.
-- Deixe a **Escuridão** em 0.
-- Se a grade incomodar, use o tipo **Sem grade** ou deixe a opacidade dela em 0.
+As câmeras são desenhadas **dentro** do canvas do Foundry, logo abaixo da imagem de fundo da cena. Os buracos transparentes deixam as câmeras aparecerem e tudo o que o Foundry desenha (tokens, desenhos, textos, réguas) continua por cima, normalmente. As câmeras acompanham a cena se você der zoom ou arrastar.
+
+Dica: deixe a **Escuridão** da cena em 0 e a **Visão de Token** desligada, senão as câmeras também ficam escuras.
 
 ## Para os jogadores
 
@@ -40,8 +38,5 @@ Dicas para a cena usada com a mesa:
 
 | Configuração | O que faz |
 |---|---|
-| Mesa ativa | Liga a mesa para todos (GM) |
 | Esconder o dock de câmeras padrão | Some com o dock normal enquanto a mesa está ativa; o áudio continua |
 | Ocultar a mesa só para mim | Esconde a mesa só no seu computador |
-
-No editor, o **Ajuste na tela** define como a arte se encaixa em janelas com proporção diferente: caber inteira (com bordas pretas), preencher (pode cortar as bordas) ou esticar.
