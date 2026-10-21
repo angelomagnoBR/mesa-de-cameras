@@ -31,7 +31,7 @@ Dica: deixe a **Escuridão** da cena em 0 e a **Visão de Token** desligada, sen
 
 ## Para os jogadores
 
-- Na parte de baixo da **sua** foto ficam os botões de câmera e microfone (ficam bem clarinhos até você passar o mouse).
+- Passe o mouse sobre a **sua** foto para aparecerem os botões de câmera e microfone.
 - Com a câmera desligada, aparece a imagem do seu personagem (ou o seu avatar, se não houver personagem vinculado).
 
 ## Configurações

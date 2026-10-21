@@ -29,12 +29,10 @@
   gap: 8px;
   transform: translate(-50%, -100%);
   pointer-events: auto;
-  opacity: 0.3;
-  transition: opacity 0.15s;
 }
 
-#mdc-front .mdc-controls.mdc-mine { display: flex; }
-#mdc-front .mdc-controls:hover { opacity: 1; }
+/* Só aparecem com o mouse em cima da própria foto */
+#mdc-front .mdc-controls.mdc-mine.mdc-hover { display: flex; opacity: 1; }
 
 #mdc-front .mdc-controls button {
   width: 34px;
@@ -55,7 +53,19 @@
 /* Esconde o dock padrão sem cortar áudio nem vídeo.
    Usa opacidade (e não visibility/display) porque alguns sistemas de chamada,
    como o LiveKit, param de enviar o vídeo de quem "não está visível" na tela. */
+/* O dock some e deixa de ocupar espaço (os ícones voltam para o canto).
+   Não usa display:none para o áudio dos jogadores continuar tocando. */
 body.mdc-hide-dock #camera-views {
+  position: fixed !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
   opacity: 0 !important;
   pointer-events: none !important;
 }

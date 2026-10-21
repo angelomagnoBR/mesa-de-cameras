@@ -621,6 +621,22 @@ const Overlay = {
     this.placeControls();
   },
 
+  /** Mostra os botões só quando o mouse está sobre a própria foto. */
+  onPointerMove(ev) {
+    if (!this.layer) return;
+    const t = canvas?.stage?.worldTransform;
+    if (!t) return;
+    const w = t.applyInverse(new PIXI.Point(ev.clientX, ev.clientY));
+    for (const d of this.slotEls.values()) {
+      if (!d.ctrl.classList.contains("mdc-mine")) { d.ctrl.classList.remove("mdc-hover"); continue; }
+      const a = -d.box.rotation, c = Math.cos(a), s = Math.sin(a);
+      const dx = w.x - d.box.x, dy = w.y - d.box.y;
+      const lx = dx * c - dy * s, ly = dx * s + dy * c;
+      const inside = Math.abs(lx) <= d.w / 2 && Math.abs(ly) <= d.h / 2;
+      d.ctrl.classList.toggle("mdc-hover", inside || d.ctrl.matches(":hover"));
+    }
+  },
+
   resetVideoTexture(d) {
     if (d.vTex) {
       d.vSprite.texture = PIXI.Texture.EMPTY;
@@ -928,6 +944,7 @@ Hooks.on("canvasReady", () => Overlay.build());
 Hooks.on("canvasTearDown", () => Overlay.destroy());
 Hooks.on("canvasPan", () => Overlay.placeControls());
 window.addEventListener("resize", () => Overlay.placeControls());
+window.addEventListener("pointermove", ev => Overlay.onPointerMove(ev), { passive: true });
 
 Hooks.on("updateScene", (scene, changes) => {
   if (scene.id !== canvas?.scene?.id) return;
