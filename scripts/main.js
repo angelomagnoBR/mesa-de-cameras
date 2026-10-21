@@ -316,6 +316,49 @@ async function toggleMyMic() {
 }
 
 /* -------------------------------------------- */
+/*  Canvas transparente                         */
+/* -------------------------------------------- */
+
+let warnedNoAlpha = false;
+
+/**
+ * Com a mesa ativa, o canvas do Foundry fica transparente (sem cor de fundo e
+ * sem a imagem de fundo da cena). A mesa aparece por trás, e tokens, desenhos,
+ * textos e réguas continuam por cima, normalmente.
+ */
+function applyCanvasTransparency() {
+  const on = !!Overlay.root;
+  const r = canvas?.app?.renderer;
+  if (!r) return;
+
+  if (on && !warnedNoAlpha) {
+    const attrs = r.gl?.getContextAttributes?.();
+    if (attrs && attrs.alpha === false) {
+      warnedNoAlpha = true;
+      ui.notifications?.warn("Mesa de Câmeras: recarregue a página (F5) para os tokens e desenhos aparecerem por cima da mesa.");
+    }
+  }
+
+  const alpha = on ? 0 : 1;
+  if (r.background && r.background.alpha !== alpha) r.background.alpha = alpha;
+
+  const p = canvas.primary;
+  if (p) {
+    if (on) {
+      const c = p.clearColor;
+      if (!c || c[3] !== 0) {
+        if (c) p._mdcClear = [...c];
+        p.clearColor = [0, 0, 0, 0];
+      }
+    } else if (p._mdcClear) {
+      p.clearColor = p._mdcClear;
+      p._mdcClear = null;
+    }
+    if (p.background && p.background.visible === on) p.background.visible = !on;
+  }
+}
+
+/* -------------------------------------------- */
 /*  Overlay                                     */
 /* -------------------------------------------- */
 
@@ -339,6 +382,13 @@ const Overlay = {
     const stage = document.createElement("div");
     stage.className = "mdc-stage";
     root.appendChild(stage);
+
+    // Camada da frente: só os botões do próprio jogador, por cima do canvas
+    const front = document.createElement("div");
+    front.id = "mdc-front";
+    const frontStage = document.createElement("div");
+    frontStage.className = "mdc-stage";
+    front.appendChild(frontStage);
 
     for (const slot of cfg.slots) {
       const el = document.createElement("div");
@@ -370,7 +420,7 @@ const Overlay = {
         if (act === "cam") toggleMyCamera();
         if (act === "mic") toggleMyMic();
       });
-      stage.appendChild(ctrl);
+      frontStage.appendChild(ctrl);
 
       this.slotEls.set(slot.id, { el, video, fb, ctrl, slot });
     }
@@ -384,11 +434,19 @@ const Overlay = {
     });
     stage.appendChild(art);
 
+    // A mesa fica ATRÁS do canvas do Foundry (que fica transparente),
+    // assim tokens, desenhos e textos aparecem por cima dela.
     const board = document.getElementById("board");
-    if (board?.parentElement) board.insertAdjacentElement("afterend", root);
-    else document.body.prepend(root);
+    if (board?.parentElement) {
+      board.insertAdjacentElement("beforebegin", root);
+      board.insertAdjacentElement("afterend", front);
+    } else {
+      document.body.prepend(root);
+      document.body.append(front);
+    }
 
-    this.root = root; this.stage = stage; this.art = art;
+    this.root = root; this.front = front; this.stage = stage; this.frontStage = frontStage; this.art = art;
+    applyCanvasTransparency();
     this.fit = cfg.fit;
     this.layout();
     this.refresh();
@@ -402,10 +460,13 @@ const Overlay = {
     const s = this.fit === "cover" ? Math.max(W / w, H / h)
       : this.fit === "stretch" ? null : Math.min(W / w, H / h);
     const sw = s ? w * s : W, sh = s ? h * s : H;
-    Object.assign(this.stage.style, {
-      width: `${sw}px`, height: `${sh}px`,
-      left: `${(W - sw) / 2}px`, top: `${(H - sh) / 2}px`
-    });
+    for (const st of [this.stage, this.frontStage]) {
+      if (!st) continue;
+      Object.assign(st.style, {
+        width: `${sw}px`, height: `${sh}px`,
+        left: `${(W - sw) / 2}px`, top: `${(H - sh) / 2}px`
+      });
+    }
     for (const d of this.slotEls.values()) {
       try { d.lkInfo?.handleResize?.(); } catch (e) { /* ignora */ }
     }
@@ -413,6 +474,7 @@ const Overlay = {
 
   refresh() {
     if (!this.root) return;
+    applyCanvasTransparency();
     for (const slotData of this.slotEls.values()) {
       const { el, video, fb, ctrl, slot } = slotData;
       const user = slot.user ? game.users.get(slot.user) : null;
@@ -494,7 +556,9 @@ const Overlay = {
     for (const d of this.slotEls.values()) { liveKitUnobserve(d); d.video.srcObject = null; }
     this.slotEls.clear();
     this.root?.remove();
-    this.root = this.stage = this.art = null;
+    this.front?.remove();
+    this.root = this.front = this.stage = this.frontStage = this.art = null;
+    applyCanvasTransparency();
   }
 };
 
@@ -821,6 +885,13 @@ Hooks.once("ready", () => {
     detectSlots
   };
 });
+
+// O canvas precisa ser criado com suporte a transparência (não dá pra mudar depois).
+// Com a mesa desligada, o fundo continua opaco, igual ao normal.
+Hooks.on("canvasConfig", config => {
+  config.backgroundAlpha = 0;
+});
+Hooks.on("canvasReady", () => applyCanvasTransparency());
 
 Hooks.on("updateUser", (user, changes) => {
   if (changes.flags?.[MOD] || "character" in changes || "avatar" in changes || "active" in changes) Overlay.refresh();

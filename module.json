@@ -2,7 +2,7 @@
   "id": "mesa-de-cameras",
   "title": "Mesa de Câmeras",
   "description": "Coloca as câmeras dos jogadores atrás das áreas transparentes de uma arte PNG, como uma mesa de stream. Detecta as áreas sozinho e deixa você escolher quem fica em cada uma.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "authors": [
     { "name": "Angelo Magno" }
   ],

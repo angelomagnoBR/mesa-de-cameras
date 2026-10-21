@@ -22,9 +22,18 @@ https://raw.githubusercontent.com/angelomagnoBR/mesa-de-cameras/main/module.json
 
 Atalho do GM para ligar/desligar a mesa: **Shift + M**.
 
+## Tokens, desenhos e textos
+
+A mesa fica **atrás** do canvas do Foundry: tokens, desenhos, textos e réguas aparecem por cima dela normalmente. Com a mesa ativa, a cor e a imagem de fundo da cena ficam escondidas.
+
+Dicas para a cena usada com a mesa:
+- Desligue a **Visão de Token** da cena, senão a névoa pode escurecer a tela.
+- Deixe a **Escuridão** em 0.
+- Se a grade incomodar, use o tipo **Sem grade** ou deixe a opacidade dela em 0.
+
 ## Para os jogadores
 
-- Passe o mouse sobre a **sua** foto para ver os botões de câmera e microfone.
+- Na parte de baixo da **sua** foto ficam os botões de câmera e microfone (ficam bem clarinhos até você passar o mouse).
 - Com a câmera desligada, aparece a imagem do seu personagem (ou o seu avatar, se não houver personagem vinculado).
 
 ## Configurações
