@@ -268,7 +268,10 @@ function liveKitObserve(slotData, userId) {
     element: video,
     visibilityChangedAt: 0,
     pictureInPicture: false,
-    get visible() { return !!slotData.showing; },
+    // "Visível" = a foto quer mostrar o vídeo. Não pode depender de já haver imagem:
+    // com o adaptive stream, o LiveKit só manda o vídeo depois que alguém diz que
+    // ele está visível (senão quem entra depois nunca recebe a câmera de quem já estava).
+    get visible() { return !!slotData.wanted; },
     width: () => Math.round((slotData.w || 0) * (canvas?.stage?.scale?.x || 1)),
     height: () => Math.round((slotData.h || 0) * (canvas?.stage?.scale?.y || 1)),
     observe() {},
@@ -646,14 +649,20 @@ const Overlay = {
         if (!ok) {
           video.srcObject = new MediaStream([track]);
           video._assignedAt = now;
-          video._kicked = false;
           this.resetVideoTexture(d);
         }
         if (video.paused) video.play?.().catch(() => {});
-        if (video.readyState < 2 && !video._kicked && now - video._assignedAt > 4000) {
-          video._kicked = true;
-          video._assignedAt = now;
+
+        // Vídeo parado (sem quadros novos): pede o vídeo de novo ao LiveKit e reconecta
+        const frames = video.getVideoPlaybackQuality?.().totalVideoFrames ?? 0;
+        const progress = `${frames}|${video.currentTime}`;
+        if (progress !== video._progress) { video._progress = progress; video._lastProgress = now; }
+        const stalledFor = now - Math.max(video._lastProgress || 0, video._assignedAt || 0);
+        if (stalledFor > 5000 && now - (video._lastKick || 0) > 8000) {
+          video._lastKick = now;
+          try { d.lkTrack?.updateVisibility?.(true); } catch (e) { /* ignora */ }
           video.srcObject = new MediaStream([track]);
+          video._assignedAt = now;
           this.resetVideoTexture(d);
           video.play?.().catch(() => {});
         }
@@ -685,6 +694,7 @@ const Overlay = {
       fSprite.visible = !vSprite.visible && coverSprite(fSprite, d.w, d.h, false);
 
       d.showing = vSprite.visible;
+      d.wanted = !!user.active && !cameraOffByFlag(user) && !rtcUser(user.id)?.hidden;
       if (!mine) liveKitObserve(d, user.id);
       const vis = !!d.lkInfo?.visible;
       if (d.lkInfo && d.lkVisible !== vis) {
