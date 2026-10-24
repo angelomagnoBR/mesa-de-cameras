@@ -17,7 +17,8 @@ https://raw.githubusercontent.com/angelomagnoBR/mesa-de-cameras/main/module.json
 3. Com a cena aberta, como GM, clique no botão **Mesa de Câmeras: configurar esta cena** (controles de token) ou vá em **Configurações → Mesa de Câmeras → Abrir editor**.
 4. O módulo detecta as áreas transparentes do fundo sozinho, inclusive a inclinação de cada uma.
 5. Em cada área, escolha qual usuário fica ali (pode ser o GM, ou deixar vazio). Para ajustar na mão: arraste para mover, quadrado amarelo para redimensionar, bolinha amarela no topo ou o campo de graus para girar.
-6. Marque **Mesa ativa nesta cena** e salve.
+6. Opcional: em cada área, use o botão **Imagem** para escolher o que aparece quando a câmera daquele jogador estiver desligada.
+7. Marque **Mesa ativa nesta cena** e salve.
 
 Cada cena tem a sua própria mesa. Em cenas sem mesa, tudo fica normal.
 
@@ -32,7 +33,11 @@ Dica: deixe a **Escuridão** da cena em 0 e a **Visão de Token** desligada, sen
 ## Para os jogadores
 
 - Passe o mouse sobre a **sua** foto para aparecerem os botões de câmera e microfone.
-- Com a câmera desligada, aparece a imagem do seu personagem (ou o seu avatar, se não houver personagem vinculado).
+- Com a câmera desligada, aparece uma imagem no lugar. A ordem é:
+  1. a imagem que **você** escolheu para esta cena (botão 🖼 nos controles da sua foto);
+  2. a imagem que o **GM** escolheu para a foto no editor;
+  3. a imagem do seu personagem vinculado;
+  4. o seu avatar.
 
 ## Configurações
 

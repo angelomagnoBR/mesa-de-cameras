@@ -2,7 +2,7 @@
   "id": "mesa-de-cameras",
   "title": "Mesa de Câmeras",
   "description": "Coloca as câmeras dos jogadores atrás das áreas transparentes da imagem de fundo da cena. Detecta as áreas sozinho e deixa você escolher quem fica em cada uma.",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "authors": [
     { "name": "Angelo Magno" }
   ],

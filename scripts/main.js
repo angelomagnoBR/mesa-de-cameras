@@ -290,8 +290,90 @@ function liveKitUnobserve(slotData) {
   slotData.lkVisible = undefined;
 }
 
-function fallbackImage(user) {
-  return user?.character?.img || user?.avatar || "icons/svg/mystery-man.svg";
+/**
+ * Imagem mostrada quando a câmera está desligada, nesta ordem:
+ * 1. a imagem que o próprio jogador escolheu para esta cena;
+ * 2. a imagem que o GM escolheu para a foto no editor;
+ * 3. a imagem do personagem vinculado; 4. o avatar do jogador.
+ */
+function fallbackImage(user, slot, scene = canvas?.scene) {
+  const own = scene ? user?.getFlag?.(MOD, "imagens")?.[scene.id] : null;
+  return own || slot?.img || user?.character?.img || user?.avatar || "icons/svg/mystery-man.svg";
+}
+
+/** Abre o seletor de arquivos do Foundry e devolve o caminho escolhido (ou null). */
+function pickFile(current, hideEl) {
+  return new Promise(resolve => {
+    const FP = foundry.applications?.apps?.FilePicker?.implementation ?? globalThis.FilePicker;
+    if (!FP) return resolve(null);
+    let done = false;
+    const finish = v => {
+      if (done) return;
+      done = true;
+      if (hideEl) hideEl.style.display = "";
+      resolve(v);
+    };
+    if (hideEl) hideEl.style.display = "none";
+    const picker = new FP({ type: "image", current: current || "", callback: path => finish(path) });
+    picker.render(true);
+    const watch = setInterval(() => {
+      if (done) return clearInterval(watch);
+      const open = picker.rendered ?? (picker._state > 0);
+      if (open === false) { clearInterval(watch); setTimeout(() => finish(null), 300); }
+    }, 400);
+  });
+}
+
+/** Janela para o jogador escolher a imagem que aparece com a câmera desligada. */
+function openMyImageDialog() {
+  const scene = canvas?.scene;
+  if (!scene) return;
+  document.getElementById("mdc-imgdlg")?.remove();
+  const current = game.user.getFlag(MOD, "imagens")?.[scene.id] ?? "";
+  const canBrowse = game.user.can?.("FILES_BROWSE");
+  const el = document.createElement("div");
+  el.id = "mdc-imgdlg";
+  el.innerHTML = `
+    <div class="mdc-dlg">
+      <h3><i class="fas fa-image"></i> Imagem com a câmera desligada</h3>
+      <p>Vale só para esta cena. Sem imagem escolhida, aparece a do GM ou a do seu personagem.</p>
+      <div class="mdc-dlg-preview"><img alt=""></div>
+      <div class="mdc-dlg-row">
+        <input type="text" name="img" placeholder="caminho ou link da imagem">
+        ${canBrowse ? `<button type="button" data-act="browse" title="Procurar"><i class="fas fa-folder-open"></i></button>` : ""}
+      </div>
+      <footer>
+        <button type="button" data-act="clear">Usar padrão</button>
+        <span class="mdc-ed-spacer"></span>
+        <button type="button" data-act="cancel">Cancelar</button>
+        <button type="button" data-act="save" class="mdc-primary">Salvar</button>
+      </footer>
+    </div>`;
+  document.body.appendChild(el);
+  const input = el.querySelector('[name="img"]');
+  const prev = el.querySelector(".mdc-dlg-preview img");
+  const show = () => { prev.src = input.value.trim() || fallbackImage(game.user, null, null); };
+  input.value = current;
+  show();
+  input.addEventListener("input", show);
+  input.addEventListener("keydown", ev => ev.stopPropagation());
+  el.addEventListener("click", async ev => {
+    const act = ev.target.closest("button[data-act]")?.dataset.act;
+    if (!act) return;
+    if (act === "browse") {
+      const path = await pickFile(input.value, el);
+      if (path) { input.value = path; show(); }
+    } else if (act === "cancel") el.remove();
+    else if (act === "clear") {
+      await game.user.update({ [`flags.${MOD}.imagens.-=${scene.id}`]: null });
+      el.remove();
+    } else if (act === "save") {
+      const v = input.value.trim();
+      if (v) await game.user.update({ [`flags.${MOD}.imagens.${scene.id}`]: v });
+      else await game.user.update({ [`flags.${MOD}.imagens.-=${scene.id}`]: null });
+      el.remove();
+    }
+  });
 }
 
 /* -------------------------------------------- */
@@ -434,11 +516,13 @@ const Overlay = {
       ctrl.className = "mdc-controls";
       ctrl.innerHTML = `
         <button type="button" data-act="cam" title="Ligar/desligar minha câmera"><i class="fas fa-video"></i></button>
-        <button type="button" data-act="mic" title="Ligar/desligar meu microfone"><i class="fas fa-microphone"></i></button>`;
+        <button type="button" data-act="mic" title="Ligar/desligar meu microfone"><i class="fas fa-microphone"></i></button>
+        <button type="button" data-act="img" title="Imagem com a câmera desligada"><i class="fas fa-image"></i></button>`;
       ctrl.addEventListener("click", ev => {
         const act = ev.target.closest("button")?.dataset.act;
         if (act === "cam") toggleMyCamera();
         if (act === "mic") toggleMyMic();
+        if (act === "img") openMyImageDialog();
       });
       front.appendChild(ctrl);
 
@@ -589,7 +673,7 @@ const Overlay = {
       vSprite.visible = videoOn && coverSprite(vSprite, d.w, d.h, mine);
 
       // Imagem do personagem quando a câmera está desligada
-      const src = fallbackImage(user);
+      const src = fallbackImage(user, slot);
       if (d.fbSrc !== src) {
         d.fbSrc = src;
         loadTex(src).then(tex => {
@@ -742,7 +826,8 @@ const Editor = {
       const found = await detectSlots(this.cfg.image);
       // Reaproveita os jogadores já escolhidos, pela ordem
       const prevUsers = this.cfg.slots.map(s => s.user);
-      found.forEach((s, i) => { s.user = prevUsers[i] ?? null; });
+      const prevImgs = this.cfg.slots.map(s => s.img);
+      found.forEach((s, i) => { s.user = prevUsers[i] ?? null; if (prevImgs[i]) s.img = prevImgs[i]; });
       this.cfg.slots = found;
       this.renderStage();
       if (!found.length) ui.notifications.warn("Não achei áreas transparentes nessa imagem. Você pode adicionar áreas manualmente.");
@@ -801,6 +886,10 @@ const Editor = {
             <i class="fas fa-rotate"></i>
             <input type="number" step="0.5" min="-180" max="180" value="${slot.rot || 0}">°
           </label>
+          <span class="mdc-ed-imgrow">
+            <button type="button" class="mdc-ed-imgbtn" title="Imagem com a câmera desligada"><i class="fas fa-image"></i> ${slot.img ? "Trocar" : "Imagem"}</button>
+            ${slot.img ? `<button type="button" class="mdc-ed-imgclr" title="Tirar imagem"><i class="fas fa-xmark"></i></button>` : ""}
+          </span>
         </div>
         <span class="mdc-ed-rothandle" title="Arraste para girar"></span>
         <span class="mdc-ed-handle"></span>`;
@@ -816,6 +905,23 @@ const Editor = {
         el.addEventListener("pointerdown", ev => ev.stopPropagation());
         el.addEventListener("keydown", ev => ev.stopPropagation());
       }
+      if (slot.img) {
+        const thumb = document.createElement("img");
+        thumb.className = "mdc-ed-thumb";
+        thumb.src = slot.img;
+        box.prepend(thumb);
+      }
+      for (const b of box.querySelectorAll(".mdc-ed-imgbtn, .mdc-ed-imgclr")) {
+        b.addEventListener("pointerdown", ev => ev.stopPropagation());
+      }
+      box.querySelector(".mdc-ed-imgbtn").addEventListener("click", async () => {
+        const path = await pickFile(slot.img, this.el);
+        if (path) { slot.img = path; this.renderStage(); }
+      });
+      box.querySelector(".mdc-ed-imgclr")?.addEventListener("click", () => {
+        delete slot.img;
+        this.renderStage();
+      });
       box.querySelector(".mdc-ed-del").addEventListener("pointerdown", ev => ev.stopPropagation());
       box.querySelector(".mdc-ed-del").addEventListener("click", () => {
         this.cfg.slots = this.cfg.slots.filter(s => s.id !== slot.id);
